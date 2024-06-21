@@ -1,0 +1,41 @@
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+--QLI FOR VILLAGE
+--------------------------------------------------------------------------------------------------------------------------------------------
+create table qli_village_eligibile_and_availed
+as
+    WITH tribal_village_counts AS (
+    SELECT 
+        replace(vd."spdpVillageId",',','') AS village_code,
+        vd."villageName" AS village_name,
+        vd."districtName" AS district_name,
+        vd."blockName" AS block_name,
+        COUNT(DISTINCT uc."awc_code") AS total_awc,
+        uc."village_lgd"
+        --select *
+    FROM 
+        "public"."VillageData" vd
+    LEFT JOIN 
+        undefinedanganwadi_centres uc
+        ON uc."village_lgd"::integer = replace(vd."spdpVillageId",',','')::integer
+    WHERE
+        LOWER(vd."isTspBlock") = 'y'
+    GROUP BY vd."spdpVillageId",  vd."villageName",vd."districtName",vd."blockName", uc."village_lgd"
+)
+select
+    village_code as "Village_Code",
+    village_name AS "Village",
+    district_name AS "District",
+    block_name AS "Block",
+    1 as "QLI_Access_to_AWC_Eligible",
+    
+    CASE 
+        WHEN total_awc = 0 THEN 0
+        WHEN total_awc >= 1 THEN 1 
+        ELSE 0
+    END AS "QLI_Acess_to_AWC_Scoring"
+FROM
+    tribal_village_counts;
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------

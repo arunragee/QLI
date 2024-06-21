@@ -1,0 +1,205 @@
+--------------------------------------------------------------------------------------------------------------------------------------------
+--QLI SCRIPTS
+--------------------------------------------------------------------------------------------------------------------------------------------
+create table qli_eligibile_and_availed
+as
+with 
+--removing duplicates from base table
+cte_beneficiary as
+(
+select * from 
+(
+select row_number () over(partition by "aadhaarVaultReference" order by id desc) as rn, *
+from external_beneficiary_detail ebd 
+where "aadhaarVaultReference" <> '' and "aadhaarVaultReference" is not null
+)res
+where rn = 1
+),
+
+--eligible criteria for mamata and removing duplicates
+cte_mamata_eligible as 
+(
+select *
+from (
+select row_number() over (partition by aadhar_no order by id desc) as rn,* 
+from undefinedmamata where 
+    cast(age as int) >= 19 and is_late_reg='false' and husband_work_gov='false' and  
+    (pvtg_or_not='true' or (pvtg_or_not='false' and cast(no_of_live_birth as int) <=1))
+)res
+where res.rn = 1
+),
+
+--scoring for mamata and removing duplicates
+cte_mamata_availed as 
+(
+select *
+from (
+select row_number() over (partition by aadhar_no order by id desc) as rn,* 
+from undefinedmamata
+where 
+                cast(age as int) >= 19
+                AND is_late_reg='false' AND husband_work_gov='false'
+                AND (pvtg_or_not='true' or (pvtg_or_not='false' and cast(no_of_live_birth as int) <=1)
+                )
+                AND status is NOT NULL  and status <> '' and LOWER(status) NOT IN  ('miscarriage', 'still birth', 'infant death', 'maternal death')
+                AND date_of_delivery != '' AND snd_instl_paid_date != '' AND fst_instl_paid_date != ''
+                AND (  
+                        (date_of_delivery IS NOT NULL and snd_instl_paid_date IS NOT NULL and (DATE_PART('day',  snd_instl_paid_date::date) -  DATE_PART('day', date_of_delivery::date)) < 365) or
+                        (date_of_delivery IS NULL and fst_instl_paid_date IS NOT NULL and (DATE_PART('day',  fst_instl_paid_date::date) -  DATE_PART('day', date_of_delivery::date)) < 365)
+                
+
+)
+)res
+where res.rn = 1
+),
+-- pension eligible criteria
+cte_mbpy_eligible as 
+(
+
+select
+mbpy.*
+FROM
+    cte_beneficiary eb
+INNER JOIN
+    undefinedmbpy mbpy
+    ON eb."aadhaarVaultReference" = mbpy."aadhar_number"
+WHERE
+    --AND 
+    mbpy."aadhar_number" IS NOT NULL AND mbpy."aadhar_number" <> '' 
+    AND mbpy."sanction_date" IS NOT NULL AND mbpy."sanction_date" <> ''
+   AND eb."dateOfBirth" IS NOT NULL AND eb."dateOfBirth" <> ''
+   AND EXTRACT(YEAR FROM to_date(case when isnumeric(replace(mbpy."sanction_date",'/','')) then mbpy."sanction_date" else null end,'dd/mm/yyyy')) IN (2019, 2020, 2021, 2022, 2023)
+    AND (
+       extract(year from AGE(to_date(case when isnumeric(replace(mbpy."sanction_date",'/','')) then mbpy."sanction_date" else null end,'dd/mm/yyyy'), to_date(case when isnumeric(replace(eb."dateOfBirth",'/','')) then eb."dateOfBirth" else null end,'dd/mm/yyyy')))::int >= 60
+        OR 
+        LOWER(eb."isDisable") = 'y'
+        OR mbpy."mbpy_scheme_id"::int IN (3, 4, 6)
+    )
+
+),
+
+--pension availed members
+cte_mbpy_availed as
+(
+select * 
+from 
+undefinedmbpy mbpy
+WHERE
+     mbpy."aadhar_number" IS NOT NULL AND mbpy."aadhar_number" <> '' 
+    AND mbpy."sanction_date" IS NOT NULL AND mbpy."sanction_date" <> ''
+    AND EXTRACT(YEAR FROM to_date(case when isnumeric(replace(mbpy."sanction_date",'/','')) then mbpy."sanction_date" else null end,'dd/mm/yyyy')) IN (2019, 2020, 2021, 2022, 2023)
+   AND mbpy."mbpy_scheme_id"::int IN (1, 3, 4, 6)
+
+),
+--sfss(PDS) removing duplicates
+cte_sfss as
+(
+select * from
+(
+select row_number () over (partition by aadhaar_number order by id) as rn,* 
+from 
+undefinedsfssmemberdatashare sfss
+where aadhaar_number is not null or aadhaar_number <> ''
+)res where res.rn = 1
+),
+
+--nfsa(PDS) removing duplicates
+cte_nfsa as
+(
+select * from
+(
+select row_number () over (partition by aadhaar_number order by id) as rn,* 
+from 
+undefinednfsamemberdatashare nfsa
+where aadhaar_number is not null or aadhaar_number <> ''
+)res where res.rn = 1
+),
+/*
+cte_sams_dedup as
+(
+select * from 
+(
+select st.*, ben."aadhaarVaultReference" as aadhaar_number,row_number () over (partition by ben."aadhaarVaultReference" order by st.id desc) as rn from 
+
+(select *,
+TRIM(cast(replace("scheme_data",'\','\\') as jsonb)->>'hashed_aadhar') as hashed_aadhar
+from scheme_transaction where TRIM(UPPER(scheme_code)) ='SAMS1') st
+inner join 
+(select distinct "aadhaarVaultReference" from external_beneficiary_detail) ben
+on st.hashed_aadhar = concat('0x',UPPER(encode(sha256(ben."aadhaarVaultReference"::bytea), 'hex')))
+--cast("scheme_data" as jsonb)->>'rationCardNo' as rationcard_number,
+)res where res.rn = 1
+),
+*/
+--health BSKY removing duplicates
+cte_bsky as
+(
+select * from 
+(
+select *,row_number () over (partition by cast("scheme_data" as jsonb)->>'rationCardNo'  order by id desc) as rn from 
+scheme_transaction 
+where 
+TRIM(UPPER(scheme_code)) = 'BSKY'
+--cast("scheme_data" as jsonb)->>'rationCardNo' as rationcard_number,
+)res where res.rn = 1
+)
+/*
+--scholarship dedupe
+cte_scholarship as
+(
+select * from 
+(
+select *,row_number () over (partition by cast(scheme_data as jsonb)->>'rationCardNo'  order by id desc) as rn from 
+scheme_transaction 
+where 
+TRIM(UPPER(scheme_code)) in ('POSTMAT','PREMAT910')
+--cast("scheme_data" as jsonb)->>'rationCardNo' as rationcard_number,
+)res where res.rn = 1
+)
+*/
+
+select 
+ben."aadhaarVaultReference" as aadhaar_number,
+ben."rationCardNumber" as rationcard_number,
+case when mam.aadhar_no is not null then 1 else 0 end as qli_eligibility_mamata,
+case when mam1.aadhar_no is not null then 1 else 0 end as qli_availed_mamata,
+case when mbpy.aadhar_number is not null then 1 else 0 end as qli_eligibility_mbpy,
+case when mbpy1.aadhar_number is not null then 1 else 0 end as qli_availed_mbpy,
+case when ben."rationCardNumber" is not null and ben."rationCardNumber" <> '' then 1 else 0 end as qli_eligibility_sfss,
+case when sfss.aadhaar_number is not null then 1 else 0 end as qli_availed_sfss,
+case when ben."rationCardNumber" is not null and ben."rationCardNumber" <> '' then 1 else 0 end as qli_eligibility_nfsa,
+case when nfsa.aadhaar_number is not null then 1 else 0 end as qli_availed_nfsa,
+case when ben."rationCardNumber" is not null and ben."rationCardNumber" <> '' then 1 else 0 end as qli_eligibility_bsky,
+case when cast(bsky."scheme_data" as jsonb)->>'rationCardNo' is not null and cast(bsky."scheme_data" as jsonb)->>'rationCardNo' <> ''
+then 1 else 0 end as qli_availed_bsky
+
+--select count(*) 
+from 
+
+cte_beneficiary ben --8482955
+left join 
+cte_mamata_eligible mam --MAMATA Eligible
+on ben."aadhaarVaultReference"  = mam.aadhar_no 
+left join 
+cte_mamata_availed mam1 --MAMATA Availed
+on ben."aadhaarVaultReference"  = mam1.aadhar_no 
+left join 
+cte_mbpy_eligible mbpy --Pension eligible
+on ben."aadhaarVaultReference"  = mbpy.aadhar_number 
+left join
+cte_mbpy_availed mbpy1 -- Pension Availed
+on ben."aadhaarVaultReference"  = mbpy1.aadhar_number 
+left join 
+cte_sfss sfss --PDS--sfss
+on ben."aadhaarVaultReference"  = sfss.aadhaar_number 
+left join 
+cte_nfsa nfsa --PDS--nfsa
+on ben."aadhaarVaultReference"  = nfsa.aadhaar_number 
+left join 
+--cte_sams_dedup sams --SAMS
+--on ben."aadhaarVaultReference"  = sams.aadhaar_number 
+--left join 
+cte_bsky bsky --BSKY
+on ben."rationCardNumber"  = cast(bsky."scheme_data" as jsonb)->>'rationCardNo' 
+;
+------------------------------------------------------------------------------------------------------------------------------------------
